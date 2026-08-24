@@ -1,0 +1,21 @@
+import express from 'express';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DomainError, ExceptionControlService } from './domain.mjs';
+import { AtomicJsonStore } from './store.mjs';
+
+const directory = fileURLToPath(new URL('.', import.meta.url));
+const store = new AtomicJsonStore(join(directory, 'data', 'exceptions.json'));
+const service = new ExceptionControlService({ cases: (await store.read()).cases, persist: (snapshot) => store.write(snapshot) });
+const app = express(); app.use(express.json({ limit: '32kb' }));
+const actor = (request) => ({ id: request.get('x-actor-id'), role: request.get('x-actor-role') });
+const run = (operation) => async (request, response) => { try { response.status(200).json(await operation(request)); } catch (error) { if (error instanceof DomainError) return response.status(error.statusCode).json({ error: error.code, message: error.message }); console.error(error); return response.status(500).json({ error: 'INTERNAL_ERROR', message: 'An unexpected error occurred.' }); } };
+app.get('/health', (_request, response) => response.json({ status: 'ok', service: 'supplier-evidence-access-exception-control-platform' }));
+app.get('/v1/cases', (_request, response) => response.json({ cases: service.list() }));
+app.get('/v1/cases/:id', run((request) => service.get(request.params.id)));
+app.post('/v1/cases', run(async (request) => ({ case: await service.submit(actor(request), request.body) })));
+app.post('/v1/cases/:id/assess', run(async (request) => ({ case: await service.assess(request.params.id, actor(request), request.body) })));
+app.post('/v1/cases/:id/authorize', run(async (request) => ({ case: await service.authorize(request.params.id, actor(request), request.body) })));
+app.post('/v1/cases/:id/mitigate', run(async (request) => ({ case: await service.mitigate(request.params.id, actor(request), request.body) })));
+app.post('/v1/cases/:id/close', run(async (request) => ({ case: await service.close(request.params.id, actor(request), request.body) })));
+const port = Number(process.env.PORT || 63100); app.listen(port, '0.0.0.0', () => console.log(`Supplier evidence exception controls listening on ${port}`));
